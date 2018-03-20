@@ -38,7 +38,7 @@ func usage() {
 
 func checkError(err error) {
 	if err != nil {
-		panic(err)
+		panic("ABORT")
 	}
 }
 
@@ -47,7 +47,6 @@ func terminate(pc net.PacketConn, addr net.Addr) {
 	data, err := ioutil.ReadFile(inputFilePath)
 	checkError(err)
 	digest := sha1.Sum(data)
-	fmt.Println(digest)
 
 	packLen := HdrSize + PyldLenSize + sha1.Size
 	pack := make([]byte, packLen)
@@ -117,14 +116,13 @@ func handlePacketConnection(pc net.PacketConn) {
 				reqCount++
 			} else {
 				pc.WriteTo(rejectArr, clientAddr)
+				fmt.Println("ABORT")
+				return
 			}
 		default:
 			fmt.Println("ABORT")
 			return
 		}
-
-		fmt.Printf("Client Address = %s\n", clientAddr)
-		fmt.Printf("Buffer = %#4x\n", recvd)
 	}
 }
 

@@ -36,7 +36,7 @@ func usage() {
 
 func checkError(err error) {
 	if err != nil {
-		panic(err)
+		panic("ABORT")
 	}
 }
 
@@ -45,22 +45,23 @@ func verifyDigest(pk []byte) {
 	recvDigest := pk[4:]
 	if int(pyldLen) != len(recvDigest) {
 		fmt.Println("ABORT")
+		return
 	}
 
 	data, err := ioutil.ReadFile(outfile)
 	checkError(err)
 
 	digest := sha1.Sum(data)
-	// fmt.Println(digest)
-	// fmt.Println(recvDigest)
 
 	if len(recvDigest) != len(digest) {
 		fmt.Println("ABORT")
+		return
 	}
 
 	for i := 0; i < len(digest); i++ {
 		if recvDigest[i] != digest[i] {
 			fmt.Println("ABORT")
+			return
 		}
 	}
 
