@@ -31,7 +31,8 @@ var (
 )
 
 func usage() {
-	fmt.Printf("Usage: ./client <server name> <server port> <clientpwd1> <clientpwd2> <clientpwd3> <output file>\n")
+	fmt.Printf("Usage: ./client <server name> <server port> <clientpwd1>" +
+		"<clientpwd2> <clientpwd3> <output file>\n")
 }
 
 func checkError(err error) {
