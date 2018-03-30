@@ -1,9 +1,14 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"os"
@@ -11,27 +16,28 @@ import (
 )
 
 const (
-	JoinReq     uint16 = 1
-	PassReq     uint16 = 2
-	PassResp    uint16 = 3
-	PassAccept  uint16 = 4
-	Data        uint16 = 5
-	Terminate   uint16 = 6
-	Reject      uint16 = 7
-	HdrSize     int    = 2
-	PyldLenSize int    = 4
-	PackIdSize  int    = 4
+	joinReq     uint16 = 1
+	passReq     uint16 = 2
+	passResp    uint16 = 3
+	passAccept  uint16 = 4
+	data        uint16 = 5
+	terminate   uint16 = 6
+	reject      uint16 = 7
+	hdrSize     int    = 2
+	pyldLenSize int    = 4
+	packIDSize  int    = 4
 )
 
 var (
-	nameNPort  []string
-	passwds    []string
-	outfile    string
-	joinReqArr = []byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00}
+	nameNPort []string
+	passwds   []string
+	outfile   string
+	aesgcm    cipher.AEAD
+	nonce     = make([]byte, 12)
 )
 
 func usage() {
-	fmt.Printf("Usage: ./client <server name> <server port> <clientpwd1>" +
+	fmt.Printf("Usage: ./client <server name> <server port> <clientpwd1> " +
 		"<clientpwd2> <clientpwd3> <output file>\n")
 }
 
@@ -41,12 +47,27 @@ func checkError(err error) {
 	}
 }
 
-func verifyDigest(pk []byte) {
+func initCipherVariables() cipher.AEAD {
+	// Create key from hash of password
+	sum := sha256.Sum256([]byte(passwds[0]))
+	key := sum[0:]
+
+	// Create cipher block
+	block, err := aes.NewCipher(key)
+	checkError(err)
+
+	// Wrap cipher block in Galois Counter Mode
+	gcm, err := cipher.NewGCM(block)
+	checkError(err)
+
+	return gcm
+}
+
+func verifyDigest(pk []byte) bool {
 	pyldLen := binary.LittleEndian.Uint32(pk[0:])
 	recvDigest := pk[4:]
 	if int(pyldLen) != len(recvDigest) {
-		fmt.Println("ABORT")
-		return
+		return false
 	}
 
 	data, err := ioutil.ReadFile(outfile)
@@ -55,23 +76,58 @@ func verifyDigest(pk []byte) {
 	digest := sha1.Sum(data)
 
 	if len(recvDigest) != len(digest) {
-		fmt.Println("ABORT")
-		return
+		return false
 	}
 
 	for i := 0; i < len(digest); i++ {
 		if recvDigest[i] != digest[i] {
-			fmt.Println("ABORT")
-			return
+			return false
 		}
 	}
 
-	fmt.Println("OK")
+	return true
 }
 
-func handleConnection(conn net.Conn) {
-	// Send Join Request
-	conn.Write(joinReqArr)
+func sendPasswordResponse(conn net.Conn, count int) {
+	if count == len(passwds) {
+		panic("ABORT")
+	}
+	passRespLen := hdrSize + pyldLenSize + len(passwds[count])
+	pyldLen := uint32(len(passwds[count]))
+	response := make([]byte, passRespLen)
+	binary.LittleEndian.PutUint16(response[0:], passResp)
+	binary.LittleEndian.PutUint32(response[2:], pyldLen)
+	copy(response[6:], []byte(passwds[count]))
+	ct := encrypt(response)
+	_, err := conn.Write(ct)
+	checkError(err)
+}
+
+func sendJoinRequest(conn net.Conn) {
+	// Send the nonce as payload with JOIN_REQ packet
+	packLen := hdrSize + pyldLenSize + len(nonce)
+	pyldLen := uint32(len(nonce))
+	packet := make([]byte, packLen)
+	binary.LittleEndian.PutUint16(packet[0:], joinReq)
+	binary.LittleEndian.PutUint32(packet[2:], pyldLen)
+	copy(packet[6:], nonce)
+	_, err := conn.Write(packet)
+	checkError(err)
+}
+
+func encrypt(pt []byte) []byte {
+	ct := aesgcm.Seal(nil, nonce, pt, nil)
+	return ct
+}
+
+func decrypt(ct []byte) []byte {
+	pt, err := aesgcm.Open(nil, nonce, ct, nil)
+	checkError(err)
+	return pt
+}
+
+func handleConnection(conn net.Conn) bool {
+	sendJoinRequest(conn)
 
 	buff := make([]byte, 1010)
 
@@ -85,36 +141,28 @@ func handleConnection(conn net.Conn) {
 	for {
 		n, err := conn.Read(buff)
 		checkError(err)
-		header := binary.LittleEndian.Uint16(buff[0:])
+		pt := decrypt(buff[0:n])
+		header := binary.LittleEndian.Uint16(pt[0:])
 
 		switch header {
-		case PassReq:
-			passRespLen := HdrSize + PyldLenSize + len(passwds[passCount])
-			pyldLen := uint32(len(passwds[passCount]))
-			response := make([]byte, passRespLen)
-			binary.LittleEndian.PutUint16(response[0:], PassResp)
-			binary.LittleEndian.PutUint32(response[2:], pyldLen)
-			copy(response[6:], []byte(passwds[passCount]))
-			_, err := conn.Write(response)
-			checkError(err)
+		case passReq:
+			sendPasswordResponse(conn, passCount)
 			passCount++
-		case PassAccept:
+		case passAccept:
 			//TODO Not sure if there is an action to take here
-		case Data:
+		case data:
 			// pkID := binary.LittleEndian.Uint32(buff[6:10])
-			data := buff[10:n]
+			// pyldLen := binary.LittleEndian.Uint32(pt[2:6])
+			data := pt[10:]
 			_, err := f.Write(data)
 			checkError(err)
 			f.Sync()
-		case Reject:
-			fmt.Println("ABORT")
-			return
-		case Terminate:
-			verifyDigest(buff[2:n])
-			return
+		case reject:
+			return false
+		case terminate:
+			return verifyDigest(pt[2:])
 		default:
-			fmt.Println("ABORT")
-			return
+			return false
 		}
 	}
 }
@@ -137,11 +185,22 @@ func main() {
 		return
 	}
 
+	// Fill nonce with random bytes
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		checkError(err)
+	}
+
+	aesgcm = initCipherVariables()
+
 	// Connect to server
 	hostPort := nameNPort[0] + ":" + nameNPort[1]
 	conn, err := net.Dial("udp4", hostPort)
 	defer conn.Close()
 	checkError(err)
 
-	handleConnection(conn)
+	if handleConnection(conn) == true {
+		fmt.Println("OK")
+	} else {
+		fmt.Println("ABORT")
+	}
 }
