@@ -8,9 +8,12 @@ The client sends a join request with a nonce (number used only once) as a payloa
 # Running in Docker
 Build server image:
 	‘docker build -t my-server-image ./server/
+	
 Build client image:
 	‘docker build -t my-client-image ./client/
+	
 Run server:
 	‘docker run -it --rm -p 8080:8080/udp --name my-server-container my-server-image’
+	
 Run client:
 	‘docker run -it --rm --net=host --name my-client-container my-client-image’
